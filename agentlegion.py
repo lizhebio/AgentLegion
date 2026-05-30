@@ -550,6 +550,157 @@ def build_plan(index: dict[str, Any], legion_name: str, mission_name: str, polic
     }
 
 
+def find_mission_step(mission: Resource, step_id: str) -> Resource | None:
+    for step in mission.get("workflow") or []:
+        if step.get("id") == step_id:
+            return step
+    return None
+
+
+def compile_runtime_plan(
+    mission_plan: Resource,
+    index: dict[str, Any],
+    mission_name: str,
+    policy_name: str | None,
+    dry_run: bool,
+) -> Resource:
+    mission = index["MissionSpec"].get(mission_name)
+    policy = index["PolicySpec"].get(policy_name) if policy_name else None
+    units = index["AgentUnit"]
+    if not mission:
+        raise ValueError(f"MissionSpec {mission_name!r} not found")
+
+    runtime_plans = []
+    for step in mission_plan.get("steps") or []:
+        selected = step.get("selectedAgent") or {}
+        agent_id = selected.get("agentId")
+        unit = units.get(agent_id)
+        runtime_class = selected.get("runtime")
+        mission_step = find_mission_step(mission, str(step.get("id"))) or {}
+        role = step.get("role")
+        unit_labels = ((unit or {}).get("metadata") or {}).get("labels") or {}
+        role_mismatch = bool(role and unit_labels.get("role") and unit_labels.get("role") != role)
+        policy_checks = step.get("policyChecks") or []
+        approval_points = [
+            f"{check.get('resource')}.{check.get('action')}"
+            for check in policy_checks
+            if check.get("effect") == "ask"
+        ]
+        denied = [
+            f"{check.get('resource')}.{check.get('action')}"
+            for check in policy_checks
+            if check.get("effect") == "deny"
+        ]
+        unsupported = []
+        warnings = list(selected.get("warnings") or [])
+        if role_mismatch:
+            warnings.append(f"selected agent role {unit_labels.get('role')!r} does not match requested role {role!r}")
+        if not unit:
+            unsupported.append(f"AgentUnit {agent_id!r} not found")
+
+        native_config: Resource
+        command_preview: list[str]
+        if runtime_class == "deepagents":
+            extension = ((unit or {}).get("extensions") or {}).get("deepagents") or {}
+            python = extension.get("python") or ".venv/bin/python"
+            script = extension.get("script") or "scripts/deepagents_smoke.py"
+            command_preview = [
+                str(python),
+                str(script),
+                "--trajectory-id",
+                f"dryrun-{step.get('id')}",
+                "--session-id",
+                f"dryrun-{step.get('id')}-session",
+            ]
+            native_config = {
+                "mode": extension.get("mode") or "local_smoke",
+                "python": python,
+                "script": script,
+                "createDeepAgent": {
+                    "model": "agentlegion-tool-binding-fake" if dry_run else extension.get("model"),
+                    "systemPrompt": mission_step.get("task"),
+                    "tools": extension.get("tools", []),
+                    "checkpointer": extension.get("checkpointer"),
+                    "store": extension.get("store"),
+                },
+                "commandPreview": command_preview,
+            }
+        elif runtime_class == "hermes":
+            command_preview = [
+                "hermes",
+                "chat",
+                "-q",
+                str(mission_step.get("task") or step.get("task") or ""),
+            ]
+            native_config = {
+                "mode": "dry_run_command_preview",
+                "commandPreview": command_preview,
+                "nativeRef": ((unit or {}).get("runtime") or {}).get("nativeRef"),
+                "enabledToolsets": (((unit or {}).get("extensions") or {}).get("hermes") or {}).get("enabledToolsets", []),
+                "checkpoint": (((unit or {}).get("extensions") or {}).get("hermes") or {}).get("checkpoint", {}),
+                "note": "Command preview only. AgentLegion does not invoke Hermes chat in dry-run mode.",
+            }
+        else:
+            command_preview = []
+            native_config = {
+                "mode": "unsupported_runtime",
+                "runtimeClass": runtime_class,
+            }
+            unsupported.append(f"runtime {runtime_class!r} has no compiler")
+
+        phase = "blocked" if denied else "pending_approval" if approval_points else "ready_dry_run"
+        runtime_plans.append(
+            {
+                "id": f"{mission_plan['metadata']['missionId']}.{step.get('id')}.{agent_id}",
+                "runtimeClass": runtime_class,
+                "agentUnitId": agent_id,
+                "missionId": mission_plan["metadata"]["missionId"],
+                "taskId": step.get("id"),
+                "adapterVersion": "agentlegion.compiler/v0",
+                "phase": phase,
+                "dryRun": dry_run,
+                "role": role,
+                "dependsOn": step.get("dependsOn", []),
+                "nativeConfig": native_config,
+                "exposedTools": (((unit or {}).get("extensions") or {}).get(str(runtime_class)) or {}).get("tools", []),
+                "permissionPlan": {
+                    "policy": policy_name,
+                    "checks": policy_checks,
+                    "approvalRequired": approval_points,
+                    "denied": denied,
+                    "defaultEffect": ((policy or {}).get("defaults") or {}).get("effect"),
+                },
+                "sandboxPlan": {
+                    "required": ((unit or {}).get("safety") or {}).get("sandboxRequired"),
+                    "runtimeLocal": True,
+                },
+                "expectedArtifacts": [step.get("expectedOutput")] if step.get("expectedOutput") else [],
+                "approvalPoints": approval_points,
+                "warnings": warnings,
+                "unsupported": unsupported,
+            }
+        )
+
+    return {
+        "apiVersion": "agentlegion.dev/v0",
+        "kind": "CompiledRuntimePlan",
+        "metadata": {
+            "missionId": mission_plan["metadata"]["missionId"],
+            "sourcePlanKind": mission_plan.get("kind"),
+            "compiler": "agentlegion.compiler/v0",
+            "dryRun": dry_run,
+        },
+        "runtimePlans": runtime_plans,
+        "summary": {
+            "total": len(runtime_plans),
+            "ready": sum(1 for item in runtime_plans if item["phase"] == "ready_dry_run"),
+            "pendingApproval": sum(1 for item in runtime_plans if item["phase"] == "pending_approval"),
+            "blocked": sum(1 for item in runtime_plans if item["phase"] == "blocked"),
+            "warnings": sum(len(item.get("warnings") or []) for item in runtime_plans),
+        },
+    }
+
+
 def command_validate(args: argparse.Namespace) -> int:
     resources = load_resources([Path(p) for p in args.files])
     diagnostics = []
@@ -595,6 +746,46 @@ def command_plan(args: argparse.Namespace) -> int:
         print(str(out))
     else:
         print(json.dumps(plan, indent=2, ensure_ascii=False))
+    return 0
+
+
+def command_compile_runtime_plan(args: argparse.Namespace) -> int:
+    paths = [Path(args.legion), Path(args.mission)]
+    if args.policy:
+        paths.append(Path(args.policy))
+    resources = load_resources(paths)
+    diagnostics = []
+    for resource in resources:
+        diagnostics.extend(validate_resource(resource))
+    if any(d.level == "error" for d in diagnostics):
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "diagnostics": [d.to_dict() for d in diagnostics],
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 1
+
+    index = index_resources(resources)
+    mission_plan = build_plan(index, args.legion_name, args.mission_name, args.policy_name)
+    compiled = compile_runtime_plan(
+        mission_plan=mission_plan,
+        index=index,
+        mission_name=args.mission_name,
+        policy_name=args.policy_name,
+        dry_run=args.dry_run,
+    )
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_json(out, compiled)
+        print(str(out))
+    else:
+        print(json.dumps(compiled, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -1291,6 +1482,17 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--policy-name", default="default-deny-side-effects", help="PolicySpec metadata.name")
     plan.add_argument("--output", "-o", help="Write mission plan JSON to file")
     plan.set_defaults(func=command_plan)
+
+    compile_plan = sub.add_parser("compile-runtime-plan", help="Compile a MissionPlan into runtime-specific dry-run plans")
+    compile_plan.add_argument("--legion", required=True, help="LegionPlan YAML, optionally containing AgentUnit documents")
+    compile_plan.add_argument("--mission", required=True, help="MissionSpec YAML")
+    compile_plan.add_argument("--policy", help="PolicySpec YAML")
+    compile_plan.add_argument("--legion-name", default="software-engineering-legion", help="LegionPlan metadata.name")
+    compile_plan.add_argument("--mission-name", default="refactor-auth-module", help="MissionSpec metadata.id/name")
+    compile_plan.add_argument("--policy-name", default="default-deny-side-effects", help="PolicySpec metadata.name")
+    compile_plan.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True, help="Compile without executing native runtimes")
+    compile_plan.add_argument("--output", "-o", help="Write compiled runtime plan JSON to file")
+    compile_plan.set_defaults(func=command_compile_runtime_plan)
 
     init_store = sub.add_parser("init-store", help="Create local Bronze/Silver/Gold AgentLegion store directories")
     init_store.add_argument("--root", default=".agentlegion", help="Local store root")

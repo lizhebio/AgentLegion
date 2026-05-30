@@ -9,10 +9,18 @@ units:
   - hermes-coder
 
 roles:
+  # MVP fallback: until OpenClaw / Claude Code are attached, commander and
+  # reviewer requests are intentionally routed to the available local runtimes.
+  # `compile-runtime-plan` marks these as role-mismatch warnings.
+  commander:
+    - deepagents-researcher
+    - hermes-coder
   researcher:
     - deepagents-researcher
   coder:
     - hermes-coder
+  reviewer:
+    - deepagents-researcher
 
 policies:
   - default-deny-side-effects

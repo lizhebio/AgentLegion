@@ -164,6 +164,19 @@ python3 agentlegion.py mvp-smoke
 
 `mvp-smoke` checks Hermes through `hermes --help`, constructs and invokes a real local DeepAgents graph with a fake tool-binding model, and ingests the DeepAgents smoke events into the Bronze/Silver trajectory store. It does not invoke a live Hermes task or call an external LLM provider.
 
+Compile the same local legion into runtime-specific dry-run plans:
+
+```bash
+python3 agentlegion.py compile-runtime-plan \
+  --legion examples/mvp-local-legion.yaml \
+  --legion-name mvp-local-legion \
+  --mission examples/mission-refactor-auth.yaml \
+  --policy examples/policy-default-deny.yaml \
+  --output .agentlegion/runtime-plans/mvp-local-refactor-auth.compiled.json
+```
+
+This produces command previews and policy phases, but does not invoke DeepAgents or Hermes tasks.
+
 ## Read-Only Planner CLI
 
 This repository includes a small read-only planner:
