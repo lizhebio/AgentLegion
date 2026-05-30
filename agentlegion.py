@@ -46,6 +46,8 @@ STORE_DIRECTORIES = [
     "gold/trajectory-diffs",
     "gold/eval-reports",
     "gold/release-gates",
+    "control/approval-decisions",
+    "control/audit-events",
     "artifacts",
     "runtime-plans",
 ]
@@ -825,6 +827,11 @@ class LocalTrajectoryStore:
         write_json(path, data)
         return content_ref(path, self.root)
 
+    def write_control_json(self, directory: str, name: str, data: Any) -> Resource:
+        path = self.root / "control" / directory / f"{safe_id(name)}.json"
+        write_json(path, data)
+        return content_ref(path, self.root)
+
     def read_fact_by_id(self, kind: str, fact_id: str) -> Resource:
         directory = FACT_DIRECTORIES.get(kind)
         if not directory:
@@ -1465,6 +1472,145 @@ def command_mvp_smoke(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def selected_for_approval(item: Resource, task_ids: set[str], plan_ids: set[str], approve_all: bool) -> bool:
+    if approve_all:
+        return item.get("phase") == "pending_approval"
+    if task_ids and item.get("taskId") in task_ids:
+        return True
+    if plan_ids and item.get("id") in plan_ids:
+        return True
+    return False
+
+
+def recompute_compiled_summary(runtime_plans: list[Resource]) -> Resource:
+    return {
+        "total": len(runtime_plans),
+        "ready": sum(1 for item in runtime_plans if item.get("phase") in {"ready_dry_run", "approved_ready"}),
+        "pendingApproval": sum(1 for item in runtime_plans if item.get("phase") == "pending_approval"),
+        "blocked": sum(1 for item in runtime_plans if item.get("phase") in {"blocked", "rejected"}),
+        "warnings": sum(len(item.get("warnings") or []) for item in runtime_plans),
+        "approved": sum(1 for item in runtime_plans if item.get("phase") == "approved_ready"),
+        "rejected": sum(1 for item in runtime_plans if item.get("phase") == "rejected"),
+    }
+
+
+def command_approve_plan(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    store = LocalTrajectoryStore(root)
+    store.init()
+    compiled_path = Path(args.compiled_plan)
+    compiled = json.loads(compiled_path.read_text(encoding="utf-8"))
+    runtime_plans = compiled.get("runtimePlans") or []
+    task_ids = set(args.task_id or [])
+    plan_ids = set(args.plan_id or [])
+    approve_all = bool(args.all)
+
+    if not approve_all and not task_ids and not plan_ids:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "select at least one --task-id, --plan-id, or --all",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 1
+
+    decision_id = args.decision_id or f"approval-{compiled.get('metadata', {}).get('missionId', 'mission')}-{sha256_json([sorted(task_ids), sorted(plan_ids), approve_all, args.decision, now_iso()])[:12]}"
+    now = now_iso()
+    decisions = []
+    audit_events = []
+    changed = 0
+
+    for item in runtime_plans:
+        if not selected_for_approval(item, task_ids, plan_ids, approve_all):
+            continue
+        previous_phase = item.get("phase")
+        if previous_phase != "pending_approval":
+            audit_events.append(
+                {
+                    "type": "approval_skipped",
+                    "runtimePlanId": item.get("id"),
+                    "taskId": item.get("taskId"),
+                    "previousPhase": previous_phase,
+                    "reason": "runtime plan is not pending approval",
+                    "timestamp": now,
+                }
+            )
+            continue
+
+        approval_points = item.get("approvalPoints") or []
+        decision = {
+            "apiVersion": "agentlegion.dev/v0",
+            "kind": "ApprovalDecision",
+            "decisionId": f"{decision_id}-{safe_id(str(item.get('taskId')))}",
+            "runtimePlanId": item.get("id"),
+            "missionId": item.get("missionId"),
+            "taskId": item.get("taskId"),
+            "agentUnitId": item.get("agentUnitId"),
+            "runtimeClass": item.get("runtimeClass"),
+            "approvalPoints": approval_points,
+            "decision": args.decision,
+            "reason": args.reason,
+            "decidedBy": args.decided_by,
+            "decidedAt": now,
+            "dryRun": bool(item.get("dryRun", True)),
+        }
+        decision_ref = store.write_control_json("approval-decisions", str(decision["decisionId"]), decision)
+        item["approvalDecisionRef"] = decision_ref
+        item["phase"] = "approved_ready" if args.decision == "allow" else "rejected"
+        item["approvedAt" if args.decision == "allow" else "rejectedAt"] = now
+        item["approvalReason"] = args.reason
+        changed += 1
+        decisions.append(decision)
+        audit_event = {
+            "apiVersion": "agentlegion.dev/v0",
+            "kind": "AuditEvent",
+            "eventId": f"audit-{decision['decisionId']}",
+            "eventType": "approval_decision",
+            "missionId": item.get("missionId"),
+            "taskId": item.get("taskId"),
+            "runtimePlanId": item.get("id"),
+            "decision": args.decision,
+            "approvalPoints": approval_points,
+            "actor": args.decided_by,
+            "reason": args.reason,
+            "timestamp": now,
+        }
+        audit_ref = store.write_control_json("audit-events", str(audit_event["eventId"]), audit_event)
+        item["auditEventRef"] = audit_ref
+        audit_events.append(audit_event)
+
+    compiled["summary"] = recompute_compiled_summary(runtime_plans)
+    compiled.setdefault("metadata", {})["approvalSimulator"] = {
+        "version": "agentlegion.approval-simulator/v0",
+        "decision": args.decision,
+        "decidedBy": args.decided_by,
+        "decidedAt": now,
+        "changed": changed,
+    }
+
+    if args.output:
+        output = Path(args.output)
+    else:
+        output = compiled_path.with_name(compiled_path.stem + f".{args.decision}.json")
+    write_json(output, compiled)
+
+    result = {
+        "ok": True,
+        "decision": args.decision,
+        "changed": changed,
+        "output": str(output),
+        "summary": compiled["summary"],
+        "decisions": decisions,
+        "auditEvents": audit_events,
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agentlegion", description="Read-only AgentLegion planner CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1552,6 +1698,19 @@ def build_parser() -> argparse.ArgumentParser:
     mvp_smoke.add_argument("--deepagents-trajectory-id", default="mvp-deepagents-smoke", help="Trajectory id for DeepAgents smoke")
     mvp_smoke.add_argument("--deepagents-session-id", default="mvp-deepagents-session", help="Session id for DeepAgents smoke")
     mvp_smoke.set_defaults(func=command_mvp_smoke)
+
+    approve = sub.add_parser("approve-plan", help="Simulate approval decisions for pending runtime plans")
+    approve.add_argument("compiled_plan", help="CompiledRuntimePlan JSON file")
+    approve.add_argument("--root", default=".agentlegion", help="Local store root")
+    approve.add_argument("--task-id", action="append", help="Task id to approve/reject; repeatable")
+    approve.add_argument("--plan-id", action="append", help="Runtime plan id to approve/reject; repeatable")
+    approve.add_argument("--all", action="store_true", help="Apply decision to all pending approval runtime plans")
+    approve.add_argument("--decision", choices=["allow", "deny"], required=True, help="Approval decision")
+    approve.add_argument("--reason", required=True, help="Reason recorded in decision and audit event")
+    approve.add_argument("--decided-by", default="local-operator", help="Actor recorded on the decision")
+    approve.add_argument("--decision-id", help="Base decision id; defaults to generated")
+    approve.add_argument("--output", "-o", help="Write approved/rejected compiled plan to file")
+    approve.set_defaults(func=command_approve_plan)
 
     return parser
 

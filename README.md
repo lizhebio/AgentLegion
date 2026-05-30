@@ -177,6 +177,19 @@ python3 agentlegion.py compile-runtime-plan \
 
 This produces command previews and policy phases, but does not invoke DeepAgents or Hermes tasks.
 
+Simulate policy approval for a pending step:
+
+```bash
+python3 agentlegion.py approve-plan \
+  .agentlegion/runtime-plans/mvp-local-refactor-auth.compiled.json \
+  --task-id implement \
+  --decision allow \
+  --reason "Approve implementation dry-run handoff only." \
+  --output .agentlegion/runtime-plans/mvp-local-refactor-auth.implement-approved.json
+```
+
+Approval writes local control records under `.agentlegion/control/` and updates the compiled plan phase to `approved_ready` or `rejected`. It still does not execute runtime commands.
+
 ## Read-Only Planner CLI
 
 This repository includes a small read-only planner:

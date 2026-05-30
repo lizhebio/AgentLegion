@@ -94,3 +94,15 @@ The compiler does not:
 - send channel messages.
 
 It only emits runtime plans and policy state.
+
+## Next Gate
+
+Use `approve-plan` to move selected `pending_approval` runtime plans into `approved_ready` or `rejected` without executing them.
+
+```bash
+python3 agentlegion.py approve-plan \
+  .agentlegion/runtime-plans/mvp-local-refactor-auth.compiled.json \
+  --task-id implement \
+  --decision allow \
+  --reason "Approve implementation dry-run handoff only."
+```
