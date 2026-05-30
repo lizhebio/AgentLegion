@@ -1,0 +1,136 @@
+apiVersion: agentlegion.dev/v0
+kind: LegionPlan
+metadata:
+  name: mvp-local-legion
+  description: Minimal local MVP legion with DeepAgents research and Hermes coding runtimes.
+
+units:
+  - deepagents-researcher
+  - hermes-coder
+
+roles:
+  researcher:
+    - deepagents-researcher
+  coder:
+    - hermes-coder
+
+policies:
+  - default-deny-side-effects
+
+limits:
+  maxParallelTasks: 2
+  maxActiveMissions: 1
+
+---
+apiVersion: agentlegion.dev/v0
+kind: AgentUnit
+metadata:
+  id: deepagents-researcher
+  name: Local DeepAgents Researcher
+  description: Local DeepAgents SDK runtime for read-only MVP smoke tests.
+  labels:
+    role: researcher
+runtime:
+  class: deepagents
+  adapter: scripts/deepagents_smoke.py
+  nativeRef: ../deepagents/libs/deepagents
+  version: 0.6.3
+capabilities:
+  domains: [source_research, architecture_analysis, evidence_synthesis]
+  actions:
+    readFiles: true
+    writeFiles: false
+    runShell: false
+    useMcp: false
+    spawnSubagents: true
+    performResearch: true
+  strengths:
+    - local SDK graph construction
+    - LangGraph-backed runtime
+    - subagent-capable harness
+  weaknesses:
+    - smoke test uses fake local model
+    - no external provider call in MVP smoke mode
+  state:
+    resume: runtime-local
+    memory: runtime-local
+    checkpoint: runtime-local
+  sideEffects: []
+interfaces:
+  input: [task_brief, messages, repo_context]
+  output: [findings, report, artifacts]
+  eventModes: [stream]
+limits:
+  maxConcurrentTasks: 1
+  timeoutSeconds: 300
+  maxTurns: 5
+safety:
+  trustLevel: medium
+  defaultPolicy: deny
+  requiresApprovalFor:
+    - subagent.spawn
+  sandboxRequired: false
+  auditLevel: standard
+extensions:
+  deepagents:
+    mode: local_smoke
+    python: .venv/bin/python
+    script: scripts/deepagents_smoke.py
+
+---
+apiVersion: agentlegion.dev/v0
+kind: AgentUnit
+metadata:
+  id: hermes-coder
+  name: Local Hermes Coder
+  description: Locally deployed Hermes runtime used as the coding member in MVP tests.
+  labels:
+    role: coder
+runtime:
+  class: hermes
+  adapter: hermes
+  nativeRef: ../hermes-agent
+capabilities:
+  domains: [coding, patch_generation, local_tool_execution]
+  actions:
+    readFiles: true
+    writeFiles: true
+    runShell: true
+    producePatch: true
+    spawnSubagents: true
+  strengths:
+    - local Hermes CLI deployment
+    - checkpoint-backed runtime semantics
+    - broad local tool surface
+  weaknesses:
+    - smoke test only checks CLI health
+    - write-capable tasks require policy approval
+  state:
+    resume: runtime-local
+    memory: runtime-local
+    checkpoint: runtime-local
+  sideEffects:
+    - filesystem.write
+    - shell.execute
+    - subagent.spawn
+interfaces:
+  input: [task_brief, file_paths, diff, repo_context, artifacts]
+  output: [patch, report, artifacts]
+  eventModes: [callback]
+limits:
+  maxConcurrentTasks: 1
+  timeoutSeconds: 300
+  maxTurns: 10
+safety:
+  trustLevel: high
+  defaultPolicy: ask
+  requiresApprovalFor:
+    - filesystem.write
+    - shell.execute
+  sandboxRequired: false
+  auditLevel: raw
+extensions:
+  hermes:
+    smokeCommand: hermes --help
+    unsafeEntrypoints:
+      - hermes-agent --help

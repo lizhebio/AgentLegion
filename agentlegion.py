@@ -11,8 +11,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
+import shutil
+import subprocess
 import sys
+from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1161,6 +1165,115 @@ def command_promote_regression_case(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_mvp_smoke(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    store = LocalTrajectoryStore(root)
+    store.init()
+
+    checks: list[Resource] = []
+
+    hermes_path = shutil.which("hermes")
+    if hermes_path:
+        hermes = subprocess.run(
+            [hermes_path, "--help"],
+            cwd=Path.cwd(),
+            text=True,
+            capture_output=True,
+            timeout=args.timeout_seconds,
+            check=False,
+        )
+        checks.append(
+            {
+                "runtime": "hermes",
+                "ok": hermes.returncode == 0 and "Hermes Agent" in hermes.stdout,
+                "command": f"{hermes_path} --help",
+                "returnCode": hermes.returncode,
+                "stdoutFirstLine": hermes.stdout.splitlines()[0] if hermes.stdout else "",
+                "stderrFirstLine": hermes.stderr.splitlines()[0] if hermes.stderr else "",
+            }
+        )
+    else:
+        checks.append({"runtime": "hermes", "ok": False, "error": "hermes command not found"})
+
+    python_path = Path(args.python)
+    deepagents_events = root / "fixtures" / "mvp-deepagents-smoke.events.json"
+    deepagents_cmd = [
+        str(python_path),
+        "scripts/deepagents_smoke.py",
+        "--events-out",
+        str(deepagents_events),
+        "--trajectory-id",
+        args.deepagents_trajectory_id,
+        "--session-id",
+        args.deepagents_session_id,
+    ]
+    deepagents = subprocess.run(
+        deepagents_cmd,
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        timeout=args.timeout_seconds,
+        check=False,
+    )
+    deepagents_ok = False
+    deepagents_payload: Resource | None = None
+    try:
+        deepagents_payload = json.loads(deepagents.stdout)
+        deepagents_ok = bool(deepagents_payload.get("ok")) and deepagents.returncode == 0
+    except json.JSONDecodeError:
+        deepagents_ok = False
+
+    checks.append(
+        {
+            "runtime": "deepagents",
+            "ok": deepagents_ok,
+            "command": " ".join(deepagents_cmd),
+            "returnCode": deepagents.returncode,
+            "result": deepagents_payload,
+            "stderrFirstLine": deepagents.stderr.splitlines()[0] if deepagents.stderr else "",
+        }
+    )
+
+    ingest_result: Resource | None = None
+    if deepagents_ok and deepagents_events.exists():
+        ingest_args = argparse.Namespace(
+            root=str(root),
+            events=str(deepagents_events),
+            trajectory_id=args.deepagents_trajectory_id,
+            session_id=args.deepagents_session_id,
+            agent_version=(deepagents_payload or {}).get("versions", {}).get("deepagents", "unknown"),
+            task_type="mvp_smoke",
+        )
+        # Capture the write summary without hiding failures from the final report.
+        events = read_json_or_jsonl(deepagents_events)
+        ingest_stdout = io.StringIO()
+        with redirect_stdout(ingest_stdout):
+            command_ingest_events(ingest_args)
+        try:
+            ingest_written = json.loads(ingest_stdout.getvalue())
+        except json.JSONDecodeError:
+            ingest_written = {"raw": ingest_stdout.getvalue()}
+        ingest_result = {
+            "events": str(deepagents_events),
+            "eventCount": len(events),
+            "trajectoryId": args.deepagents_trajectory_id,
+            "written": ingest_written,
+        }
+
+    ok = all(bool(check.get("ok")) for check in checks)
+    result = {
+        "ok": ok,
+        "checks": checks,
+        "ingest": ingest_result,
+        "notes": [
+            "Hermes smoke checks CLI health only; it does not invoke a live Hermes task.",
+            "DeepAgents smoke constructs and invokes a local graph with a fake tool-binding model.",
+        ],
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agentlegion", description="Read-only AgentLegion planner CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1229,6 +1342,14 @@ def build_parser() -> argparse.ArgumentParser:
     promote.add_argument("--retrieval-corpus-version", help="Retrieval corpus version if relevant")
     promote.add_argument("--timezone", default="UTC", help="Replay clock timezone")
     promote.set_defaults(func=command_promote_regression_case)
+
+    mvp_smoke = sub.add_parser("mvp-smoke", help="Run local MVP smoke checks for Hermes and DeepAgents")
+    mvp_smoke.add_argument("--root", default=".agentlegion", help="Local store root")
+    mvp_smoke.add_argument("--python", default=".venv/bin/python", help="Python executable with DeepAgents installed")
+    mvp_smoke.add_argument("--timeout-seconds", type=int, default=60, help="Per-runtime smoke timeout")
+    mvp_smoke.add_argument("--deepagents-trajectory-id", default="mvp-deepagents-smoke", help="Trajectory id for DeepAgents smoke")
+    mvp_smoke.add_argument("--deepagents-session-id", default="mvp-deepagents-session", help="Session id for DeepAgents smoke")
+    mvp_smoke.set_defaults(func=command_mvp_smoke)
 
     return parser
 

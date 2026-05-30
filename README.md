@@ -151,6 +151,19 @@ python3 agentlegion.py record-score --target-type trajectory_run --target-id fix
 python3 agentlegion.py promote-regression-case --trajectory-id fixture-trajectory-001 --root-cause-category "Tool Arguments" --severity medium --regression-priority P1 --replay-input "..." --expected-behavior "..."
 ```
 
+## Local MVP Smoke Test
+
+For the first local MVP formation, use Hermes as the coding runtime and DeepAgents as the research runtime:
+
+```bash
+uv venv --python 3.11 .venv
+uv pip install -e ../deepagents/libs/deepagents
+python3 agentlegion.py validate examples/mvp-local-legion.yaml examples/mission-refactor-auth.yaml examples/policy-default-deny.yaml
+python3 agentlegion.py mvp-smoke
+```
+
+`mvp-smoke` checks Hermes through `hermes --help`, constructs and invokes a real local DeepAgents graph with a fake tool-binding model, and ingests the DeepAgents smoke events into the Bronze/Silver trajectory store. It does not invoke a live Hermes task or call an external LLM provider.
+
 ## Read-Only Planner CLI
 
 This repository includes a small read-only planner:
