@@ -1,0 +1,365 @@
+apiVersion: agentlegion.dev/v0
+kind: LegionPlan
+metadata:
+  name: software-engineering-legion
+  description: A governed legion for source-code research, implementation, review, and controlled application.
+
+units:
+  - openclaw-commander
+  - deepagents-researcher
+  - hermes-coder
+  - claude-code-reviewer
+  - open-webui-chat-surface
+
+roles:
+  commander: openclaw-commander
+  researcher:
+    - deepagents-researcher
+  coder:
+    - hermes-coder
+  reviewer:
+    - claude-code-reviewer
+  chatSurface:
+    - open-webui-chat-surface
+
+routing:
+  - match:
+      domains: [source_research, architecture_analysis]
+      actions: [readFiles, performResearch]
+      outputTypes: [findings, report]
+      riskMax: medium
+    prefer:
+      - deepagents-researcher
+
+  - match:
+      domains: [coding, patch_generation]
+      actions: [readFiles, writeFiles, producePatch]
+      outputTypes: [patch]
+      riskMax: high
+    prefer:
+      - hermes-coder
+
+  - match:
+      domains: [code_review, static_analysis]
+      actions: [readFiles, reviewCode]
+      outputTypes: [review]
+      riskMax: medium
+    prefer:
+      - claude-code-reviewer
+
+  - match:
+      domains: [channel_operations, mission_control]
+      actions: [bindChannels, spawnSubagents]
+      outputTypes: [decision]
+      riskMax: high
+    prefer:
+      - openclaw-commander
+
+policies:
+  - default-deny-side-effects
+
+limits:
+  maxParallelTasks: 4
+  maxActiveMissions: 2
+
+---
+apiVersion: agentlegion.dev/v0
+kind: AgentUnit
+metadata:
+  id: openclaw-commander
+  name: OpenClaw Commander
+  description: Persistent command and channel runtime for mission orchestration.
+  labels:
+    role: commander
+runtime:
+  class: openclaw
+  adapter: adapters/openclaw
+capabilities:
+  domains: [mission_control, channel_operations, session_orchestration]
+  actions:
+    readFiles: true
+    writeFiles: true
+    runShell: true
+    useMcp: true
+    sendMessages: true
+    spawnSubagents: true
+    scheduleTasks: true
+    bindChannels: true
+    useSecrets: true
+  strengths:
+    - persistent sessions
+    - channel binding
+    - heartbeat
+    - subagent registry
+    - event streams
+  weaknesses:
+    - high side-effect surface
+    - requires strict policy gates
+  state:
+    resume: runtime-local
+    memory: runtime-local
+    checkpoint: runtime-local
+  sideEffects:
+    - filesystem.write
+    - shell.execute
+    - network.egress
+    - mcp.install
+    - secret.read
+    - channel.send
+    - schedule.create
+    - subagent.spawn
+interfaces:
+  input: [task_brief, messages, artifacts, repo_context]
+  output: [decision, report, artifacts]
+  eventModes: [stream]
+limits:
+  maxConcurrentTasks: 2
+  timeoutSeconds: 3600
+safety:
+  trustLevel: high
+  defaultPolicy: ask
+  requiresApprovalFor:
+    - filesystem.write
+    - shell.execute
+    - channel.send
+    - schedule.create
+    - mcp.install
+  sandboxRequired: true
+  auditLevel: raw
+extensions:
+  openclaw:
+    runtime:
+      type: acp
+      acp:
+        agent: codex
+        backend: local
+        mode: persistent
+    sandbox:
+      mode: all
+      backend: docker
+      workspaceAccess: rw
+
+---
+apiVersion: agentlegion.dev/v0
+kind: AgentUnit
+metadata:
+  id: deepagents-researcher
+  name: DeepAgents Researcher
+  description: Graph-native source research agent for evidence-grounded analysis.
+  labels:
+    role: researcher
+runtime:
+  class: deepagents
+  adapter: adapters/deepagents
+capabilities:
+  domains: [source_research, architecture_analysis, evidence_synthesis]
+  actions:
+    readFiles: true
+    writeFiles: false
+    runShell: false
+    useMcp: false
+    spawnSubagents: true
+    performResearch: true
+  strengths:
+    - source evidence collection
+    - structured analysis
+    - graph-based execution
+    - bounded subagent delegation
+  weaknesses:
+    - not a channel gateway
+    - runtime-local graph state
+  state:
+    resume: runtime-local
+    memory: runtime-local
+    checkpoint: runtime-local
+  sideEffects: []
+interfaces:
+  input: [task_brief, file_paths, repo_context, artifacts]
+  output: [findings, report, artifacts]
+  eventModes: [stream]
+limits:
+  maxConcurrentTasks: 3
+  timeoutSeconds: 2400
+  maxTurns: 50
+safety:
+  trustLevel: medium
+  defaultPolicy: deny
+  requiresApprovalFor:
+    - subagent.spawn
+  sandboxRequired: false
+  auditLevel: standard
+extensions:
+  deepagents:
+    model: anthropic:claude-sonnet-4-6
+    checkpointer: runtime
+    store: runtime
+    tools:
+      - read_file
+      - grep
+      - glob
+      - task
+
+---
+apiVersion: agentlegion.dev/v0
+kind: AgentUnit
+metadata:
+  id: hermes-coder
+  name: Hermes Coder
+  description: Local coding worker with checkpoint-backed file edits.
+  labels:
+    role: coder
+runtime:
+  class: hermes
+  adapter: adapters/hermes
+capabilities:
+  domains: [coding, patch_generation, local_tool_execution]
+  actions:
+    readFiles: true
+    writeFiles: true
+    runShell: true
+    producePatch: true
+    spawnSubagents: true
+  strengths:
+    - local code edits
+    - checkpoint before mutating tools
+    - delegated child agents
+  weaknesses:
+    - runtime-specific conversation loop
+    - checkpoint is best-effort and runtime-local
+  state:
+    resume: runtime-local
+    memory: runtime-local
+    checkpoint: runtime-local
+  sideEffects:
+    - filesystem.write
+    - shell.execute
+    - subagent.spawn
+interfaces:
+  input: [task_brief, file_paths, diff, repo_context, artifacts]
+  output: [patch, report, artifacts]
+  eventModes: [callback]
+limits:
+  maxConcurrentTasks: 1
+  timeoutSeconds: 2400
+  maxTurns: 90
+safety:
+  trustLevel: high
+  defaultPolicy: ask
+  requiresApprovalFor:
+    - filesystem.write
+    - shell.execute
+  sandboxRequired: false
+  auditLevel: raw
+extensions:
+  hermes:
+    enabledToolsets: [filesystem, search, patch]
+    disabledToolsets: [send_message]
+    checkpoint:
+      enabled: true
+
+---
+apiVersion: agentlegion.dev/v0
+kind: AgentUnit
+metadata:
+  id: claude-code-reviewer
+  name: Claude Code Reviewer
+  description: Focused code review specialist for defects, regressions, and missing tests.
+  labels:
+    role: reviewer
+runtime:
+  class: claude-code
+  adapter: adapters/claude-code
+capabilities:
+  domains: [code_review, static_analysis, repo_navigation]
+  actions:
+    readFiles: true
+    writeFiles: false
+    runShell: false
+    useMcp: true
+    reviewCode: true
+  strengths:
+    - code review
+    - repo navigation
+    - precise findings
+  weaknesses:
+    - sidechain transcript is runtime-local
+    - permission flow is UI/runtime-specific
+  state:
+    resume: runtime-local
+    memory: runtime-local
+    checkpoint: none
+  sideEffects:
+    - mcp.install
+interfaces:
+  input: [task_brief, file_paths, diff, repo_context, artifacts]
+  output: [review, findings, artifacts]
+  eventModes: [stream]
+limits:
+  maxConcurrentTasks: 2
+  timeoutSeconds: 1800
+  maxTurns: 20
+safety:
+  trustLevel: medium
+  defaultPolicy: deny
+  requiresApprovalFor:
+    - mcp.install
+  sandboxRequired: false
+  auditLevel: standard
+extensions:
+  claudeCode:
+    tools: [Read, Grep, Glob]
+    disallowedTools: [Write, Edit, Bash]
+    permissionMode: plan
+    isolation: worktree
+
+---
+apiVersion: agentlegion.dev/v0
+kind: AgentUnit
+metadata:
+  id: open-webui-chat-surface
+  name: open-webui Chat Surface
+  description: Chat UI, function/tool provider, and memory backend surface.
+  labels:
+    role: chat-surface
+runtime:
+  class: open-webui-chat
+  adapter: adapters/open-webui-chat
+capabilities:
+  domains: [chat_surface, tool_provider, memory_backend]
+  actions:
+    readFiles: false
+    writeFiles: false
+    runShell: false
+    useMcp: true
+    sendMessages: false
+  strengths:
+    - user-facing chat
+    - tool/function registry
+    - memory storage
+  weaknesses:
+    - not a full autonomous agent runtime
+    - no native subagent lifecycle
+  state:
+    resume: runtime-local
+    memory: external
+    checkpoint: none
+  sideEffects:
+    - network.egress
+interfaces:
+  input: [messages]
+  output: [report, artifacts]
+  eventModes: [stream, webhook]
+limits:
+  maxConcurrentTasks: 4
+  timeoutSeconds: 1200
+safety:
+  trustLevel: medium
+  defaultPolicy: ask
+  requiresApprovalFor:
+    - mcp.install
+  sandboxRequired: false
+  auditLevel: standard
+extensions:
+  openWebUI:
+    chatEndpoint: /api/chat/completions
+

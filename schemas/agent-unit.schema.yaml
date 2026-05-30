@@ -1,0 +1,52 @@
+apiVersion: agentlegion.dev/v0
+kind: AgentUnit
+metadata:
+  id: string
+  name: string
+  description: string
+  labels: {}
+runtime:
+  class: deepagents | openclaw | claude-code | hermes | open-webui-chat | string
+  adapter: string
+  nativeRef: string
+  version: string
+capabilities:
+  domains: []
+  actions:
+    readFiles: false
+    writeFiles: false
+    runShell: false
+    useMcp: false
+    browseWeb: false
+    sendMessages: false
+    spawnSubagents: false
+    scheduleTasks: false
+    bindChannels: false
+    useSecrets: false
+    producePatch: false
+    reviewCode: false
+    performResearch: false
+  strengths: []
+  weaknesses: []
+  state:
+    resume: none | runtime-local | portable
+    memory: none | runtime-local | external
+    checkpoint: none | runtime-local | portable
+  sideEffects: []
+interfaces:
+  input: []
+  output: []
+  eventModes: []
+limits:
+  maxConcurrentTasks: 1
+  timeoutSeconds: 1800
+  maxTurns: 50
+  maxCostUsd: 0
+safety:
+  trustLevel: low | medium | high | critical
+  defaultPolicy: allow | deny | ask
+  requiresApprovalFor: []
+  sandboxRequired: false
+  auditLevel: minimal | standard | raw
+extensions: {}
+

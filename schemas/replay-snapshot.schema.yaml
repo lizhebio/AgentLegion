@@ -1,0 +1,29 @@
+apiVersion: agentlegion.dev/v0
+kind: ReplaySnapshot
+snapshotId: string
+regressionCaseId: string
+trajectoryId: string
+userInputRef:
+  uri: string
+initialStateRef:
+  uri: string
+memorySnapshotRef:
+  uri: string
+toolSpaceSnapshotRef:
+  uri: string
+toolSchemaSnapshotRef:
+  uri: string
+retrievalCorpusVersion: string
+permissionContextRef:
+  uri: string
+externalApiFixtureRef:
+  uri: string
+clock:
+  instant: string
+  timezone: string
+featureFlags: {}
+modelConfigRef:
+  uri: string
+promptVersion: string
+expectedBehaviorRef:
+  uri: string

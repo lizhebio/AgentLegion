@@ -1,0 +1,29 @@
+apiVersion: agentlegion.dev/v0
+kind: TrajectoryRun
+trajectoryId: string
+traceId: string
+sessionId: string
+missionId: string
+taskId: string
+agentUnitId: string
+runtimeClass: deepagents | openclaw | claude-code | hermes | open-webui-chat | string
+agentVersion: string
+promptVersion: string
+model: string
+modelParamsRef:
+  uri: string
+toolSchemaVersion: string
+taskType: string
+status: running | completed | failed | cancelled | replayed
+finalOutcome: success | failure | partial | unknown
+cost:
+  totalUsd: 0
+  inputTokens: 0
+  outputTokens: 0
+latencyMs: 0
+normalizerVersion: string
+startedAt: string
+endedAt: string
+rawTraceRef:
+  uri: string
+metadata: {}

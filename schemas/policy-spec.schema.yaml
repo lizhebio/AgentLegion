@@ -1,0 +1,18 @@
+apiVersion: agentlegion.dev/v0
+kind: PolicySpec
+metadata:
+  name: string
+  description: string
+defaults:
+  effect: deny
+rules:
+  - id: string
+    resource: tool | filesystem | shell | network | mcp | secret | channel | schedule | subagent | artifact | string
+    action: string
+    effect: allow | deny | ask
+    match: {}
+    appliesTo:
+      agents: []
+      roles: []
+      missions: []
+

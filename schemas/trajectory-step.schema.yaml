@@ -1,0 +1,18 @@
+apiVersion: agentlegion.dev/v0
+kind: TrajectoryStep
+stepId: string
+trajectoryId: string
+parentStepId: string
+stepIndex: 0
+turnIndex: 0
+stepType: message | llm_call | tool_call | retrieval | state_transition | artifact | approval | subagent | workflow | string
+name: string
+status: started | completed | failed | skipped | retrying
+inputRef:
+  uri: string
+outputRef:
+  uri: string
+startedAt: string
+endedAt: string
+latencyMs: 0
+errorType: string

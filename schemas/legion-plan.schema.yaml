@@ -1,0 +1,25 @@
+apiVersion: agentlegion.dev/v0
+kind: LegionPlan
+metadata:
+  name: string
+  description: string
+units: []
+roles:
+  commander: string
+  researcher: []
+  coder: []
+  reviewer: []
+routing:
+  - match:
+      domains: []
+      actions: []
+      inputTypes: []
+      outputTypes: []
+      riskMax: low | medium | high | critical
+    prefer: []
+    deny: []
+policies: []
+limits:
+  maxParallelTasks: 4
+  maxActiveMissions: 2
+

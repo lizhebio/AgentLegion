@@ -1,0 +1,18 @@
+apiVersion: agentlegion.dev/v0
+kind: RegressionCase
+caseId: string
+sourceTrajectoryId: string
+rootCauseCategory: Intent | Planning | Tool Selection | Tool Arguments | Observation Use | Retrieval | State | Recovery | Artifact | Policy / Safety | Infrastructure | Evaluation
+rootCauseDetail: string
+failedStepId: string
+severity: low | medium | high | critical
+fixOwner: string
+regressionPriority: P0 | P1 | P2
+replayInputRef:
+  uri: string
+expectedBehaviorRef:
+  uri: string
+replaySnapshotRef:
+  uri: string
+createdFromFailureAt: string
+status: active | fixed | quarantined | retired

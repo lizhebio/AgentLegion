@@ -1,0 +1,79 @@
+apiVersion: agentlegion.dev/v0
+kind: MissionSpec
+metadata:
+  id: refactor-auth-module
+  name: Refactor Auth Module
+  description: Analyze, plan, patch, and review an authentication module refactor.
+
+goal: |
+  Analyze the authentication module, identify risks, propose a scoped refactor,
+  implement the approved patch, and produce an evidence-grounded review report.
+
+context:
+  workspace: /Users/pengwanli/Downloads/agent_exp
+  files:
+    - src/auth
+    - tests/auth
+  artifacts: []
+  variables:
+    language: typescript
+    preserveBehavior: true
+
+constraints:
+  timeoutSeconds: 7200
+  maxCostUsd: 20
+  requireApprovalBeforeSideEffects: true
+
+workflow:
+  - id: research
+    task: |
+      Inspect the authentication module and produce source-grounded findings:
+      architecture, key flows, risks, and test coverage.
+    role: researcher
+    expectedOutput: architecture_findings
+
+  - id: plan
+    task: |
+      Convert research findings into a scoped implementation plan.
+      Identify files to change and tests to run.
+    role: commander
+    dependsOn: [research]
+    inputArtifacts: [architecture_findings]
+    expectedOutput: implementation_plan
+
+  - id: implement
+    task: |
+      Implement the approved plan as a minimal patch.
+      Do not expand scope.
+    role: coder
+    dependsOn: [plan]
+    inputArtifacts: [implementation_plan]
+    expectedOutput: patch
+    requiresApproval: true
+
+  - id: review
+    task: |
+      Review the patch for correctness, regressions, security risks, and missing tests.
+    role: reviewer
+    dependsOn: [implement]
+    inputArtifacts: [patch]
+    expectedOutput: review_findings
+
+  - id: decide
+    task: |
+      Decide whether the patch is ready to apply based on the review.
+      If not ready, request revision.
+    role: commander
+    dependsOn: [review]
+    inputArtifacts: [patch, review_findings]
+    expectedOutput: decision
+    requiresApproval: true
+
+expectedOutput:
+  type: report
+  schema:
+    required:
+      - summary
+      - artifacts
+      - decision
+

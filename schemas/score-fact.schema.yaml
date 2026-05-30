@@ -1,0 +1,14 @@
+apiVersion: agentlegion.dev/v0
+kind: ScoreFact
+scoreId: string
+trajectoryId: string
+targetType: trajectory_run | trajectory_step | tool_call | artifact | regression_case | string
+targetId: string
+scoreName: string
+scoreType: binary | numeric | categorical | rubric | human_feedback | string
+scoreValue: 0
+evaluatorType: human | llm | rule | unit_test | integration_test | string
+evaluatorVersion: string
+rationaleRef:
+  uri: string
+createdAt: string

@@ -1,0 +1,84 @@
+apiVersion: agentlegion.dev/v0
+kind: PolicySpec
+metadata:
+  name: default-deny-side-effects
+  description: Default-deny policy for high-risk agent side effects.
+
+defaults:
+  effect: deny
+
+rules:
+  - id: allow-read-files-for-research-and-review
+    resource: filesystem
+    action: read
+    effect: allow
+    appliesTo:
+      roles: [researcher, reviewer, coder, commander]
+
+  - id: ask-before-file-write
+    resource: filesystem
+    action: write
+    effect: ask
+    appliesTo:
+      roles: [coder, commander]
+
+  - id: deny-file-write-for-reviewer
+    resource: filesystem
+    action: write
+    effect: deny
+    appliesTo:
+      roles: [reviewer, researcher]
+
+  - id: ask-before-shell
+    resource: shell
+    action: execute
+    effect: ask
+    appliesTo:
+      roles: [coder, commander]
+
+  - id: deny-shell-for-reviewer-and-researcher
+    resource: shell
+    action: execute
+    effect: deny
+    appliesTo:
+      roles: [reviewer, researcher]
+
+  - id: ask-before-mcp-install
+    resource: mcp
+    action: install
+    effect: ask
+
+  - id: ask-before-secret-read
+    resource: secret
+    action: read
+    effect: ask
+
+  - id: ask-before-channel-send
+    resource: channel
+    action: send
+    effect: ask
+    appliesTo:
+      roles: [commander]
+
+  - id: deny-channel-send-for-workers
+    resource: channel
+    action: send
+    effect: deny
+    appliesTo:
+      roles: [researcher, coder, reviewer]
+
+  - id: ask-before-schedule-create
+    resource: schedule
+    action: create
+    effect: ask
+    appliesTo:
+      roles: [commander]
+
+  - id: limit-subagent-spawn
+    resource: subagent
+    action: spawn
+    effect: ask
+    match:
+      maxSpawnDepth: 1
+      maxChildrenPerAgent: 5
+

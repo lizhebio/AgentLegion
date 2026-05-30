@@ -1,0 +1,25 @@
+apiVersion: agentlegion.dev/v0
+kind: ToolCallFact
+toolCallId: string
+stepId: string
+trajectoryId: string
+toolName: string
+namespace: string
+args: {}
+argsHash: string
+argsRef:
+  uri: string
+validationResult:
+  ok: true
+  diagnostics: []
+result: {}
+resultRef:
+  uri: string
+resultSummary: string
+isError: false
+errorType: string
+latencyMs: 0
+retryIndex: 0
+sideEffectType: read_only | write_internal | write_external | user_visible_publish | payment_or_financial | permission_change | irreversible
+approvalStatus: not_required | pending | approved | denied | expired | unknown
+sourceStepId: string

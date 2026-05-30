@@ -1,0 +1,29 @@
+apiVersion: agentlegion.dev/v0
+kind: MissionSpec
+metadata:
+  id: string
+  name: string
+  description: string
+goal: string
+context:
+  workspace: string
+  files: []
+  artifacts: []
+  variables: {}
+constraints:
+  timeoutSeconds: 3600
+  maxCostUsd: 0
+  requireApprovalBeforeSideEffects: true
+workflow:
+  - id: string
+    task: string
+    role: string
+    agentId: string
+    dependsOn: []
+    inputArtifacts: []
+    expectedOutput: string
+    requiresApproval: false
+expectedOutput:
+  type: report | patch | decision | string
+  schema: {}
+
