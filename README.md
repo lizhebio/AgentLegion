@@ -64,6 +64,7 @@ docs/
   policy-and-safety.md   Security model and risk controls
   implementation-guide.md Practical implementation sequence
   mvp-roadmap.md         Practical implementation phases
+  dependency-aware-executor.md Mission-level safe executor with dependsOn checks
   reviews/               Architecture reviews and critique
   adr/
     0001-agentlegion-not-agentchart.md
@@ -207,6 +208,16 @@ python3 agentlegion.py execute-plan \
 ```
 
 `execute-plan` currently executes only DeepAgents `local_smoke` plans. Hermes command previews are recorded as skipped and are not invoked.
+
+Run the dependency-aware mission executor after approval:
+
+```bash
+python3 agentlegion.py execute-mission \
+  .agentlegion/runtime-plans/mvp-local-refactor-auth.plan-approved.json \
+  --output .agentlegion/runtime-plans/mvp-local-refactor-auth.mission-executed.json
+```
+
+`execute-mission` checks each step's `dependsOn` before execution, records `dependency_blocked` when prerequisites are not satisfied, writes a mission execution report under `.agentlegion/artifacts/`, and still uses the same safe boundary: DeepAgents `local_smoke` only, Hermes skipped.
 
 ## Read-Only Planner CLI
 

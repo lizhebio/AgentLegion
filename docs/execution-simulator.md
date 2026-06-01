@@ -4,6 +4,8 @@
 
 It reads an approved `CompiledRuntimePlan` and executes only runtime plans that the local simulator knows are safe.
 
+For mission-level dependency checks, use `execute-mission`. See [dependency-aware-executor.md](dependency-aware-executor.md).
+
 For the current MVP:
 
 - DeepAgents `local_smoke` plans can execute.
@@ -90,3 +92,17 @@ The simulator does not:
 - send external messages.
 
 It only executes the DeepAgents fake-model smoke path and captures trajectory facts.
+
+## Mission-Level Execution
+
+`execute-plan` does not inspect `dependsOn`; it is a targeted single-plan execution tool.
+
+`execute-mission` walks the compiled mission, checks dependencies, writes `dependency_blocked` records when prerequisites are not satisfied, and then reuses the same safe simulator path for executable items:
+
+```bash
+python3 agentlegion.py execute-mission \
+  .agentlegion/runtime-plans/mvp-local-refactor-auth.plan-approved.json \
+  --output .agentlegion/runtime-plans/mvp-local-refactor-auth.mission-executed.json
+```
+
+Use `--include-ready-dry-run` when you want the mission executor to run `ready_dry_run` DeepAgents local smoke steps as well as approved steps.
