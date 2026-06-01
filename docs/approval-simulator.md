@@ -88,3 +88,15 @@ The simulator skips runtime plans that are not `pending_approval` and records an
 ## Safety Boundary
 
 Approval changes control-plane state only. It does not execute command previews, does not call Hermes, does not call DeepAgents, and does not perform side effects.
+
+## Next Gate
+
+Use `execute-plan` after approval to run only simulator-safe runtime plans.
+
+```bash
+python3 agentlegion.py execute-plan \
+  .agentlegion/runtime-plans/mvp-local-refactor-auth.plan-approved.json \
+  --task-id plan
+```
+
+The current execution simulator runs only DeepAgents `local_smoke` plans. Hermes remains non-executed.

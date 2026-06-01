@@ -48,6 +48,7 @@ STORE_DIRECTORIES = [
     "gold/release-gates",
     "control/approval-decisions",
     "control/audit-events",
+    "control/execution-records",
     "artifacts",
     "runtime-plans",
 ]
@@ -1611,6 +1612,200 @@ def command_approve_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_execute_plan(args: argparse.Namespace) -> int:
+    root = Path(args.root)
+    store = LocalTrajectoryStore(root)
+    store.init()
+    plan_path = Path(args.compiled_plan)
+    compiled = json.loads(plan_path.read_text(encoding="utf-8"))
+    runtime_plans = compiled.get("runtimePlans") or []
+    task_ids = set(args.task_id or [])
+    plan_ids = set(args.plan_id or [])
+    execute_all = bool(args.all)
+
+    if not execute_all and not task_ids and not plan_ids:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "select at least one --task-id, --plan-id, or --all",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 1
+
+    execution_id = args.execution_id or f"execution-{compiled.get('metadata', {}).get('missionId', 'mission')}-{sha256_json([sorted(task_ids), sorted(plan_ids), execute_all, now_iso()])[:12]}"
+    results = []
+    changed = 0
+
+    for item in runtime_plans:
+        selected = execute_all or item.get("taskId") in task_ids or item.get("id") in plan_ids
+        if not selected:
+            continue
+
+        started_at = now_iso()
+        record: Resource = {
+            "apiVersion": "agentlegion.dev/v0",
+            "kind": "ExecutionRecord",
+            "executionId": f"{execution_id}-{safe_id(str(item.get('taskId')))}",
+            "runtimePlanId": item.get("id"),
+            "missionId": item.get("missionId"),
+            "taskId": item.get("taskId"),
+            "agentUnitId": item.get("agentUnitId"),
+            "runtimeClass": item.get("runtimeClass"),
+            "phaseBefore": item.get("phase"),
+            "mode": "safe_simulator",
+            "startedAt": started_at,
+        }
+
+        if item.get("phase") != "approved_ready":
+            record.update(
+                {
+                    "status": "skipped",
+                    "reason": "runtime plan is not approved_ready",
+                    "endedAt": now_iso(),
+                }
+            )
+        elif item.get("runtimeClass") != "deepagents":
+            record.update(
+                {
+                    "status": "skipped",
+                    "reason": f"runtime {item.get('runtimeClass')!r} is not executable by the safe simulator",
+                    "commandPreview": (item.get("nativeConfig") or {}).get("commandPreview"),
+                    "endedAt": now_iso(),
+                }
+            )
+            item["phase"] = "approved_not_executed"
+            item["executionSkipReason"] = record["reason"]
+            changed += 1
+        else:
+            native = item.get("nativeConfig") or {}
+            if native.get("mode") != "local_smoke":
+                record.update(
+                    {
+                        "status": "skipped",
+                        "reason": f"deepagents mode {native.get('mode')!r} is not executable by the safe simulator",
+                        "endedAt": now_iso(),
+                    }
+                )
+            else:
+                trajectory_id = f"exec-{safe_id(str(item.get('taskId')))}"
+                session_id = f"{trajectory_id}-session"
+                events_out = root / "fixtures" / f"{trajectory_id}.events.json"
+                command = [
+                    str(native.get("python") or args.python),
+                    str(native.get("script") or "scripts/deepagents_smoke.py"),
+                    "--events-out",
+                    str(events_out),
+                    "--trajectory-id",
+                    trajectory_id,
+                    "--session-id",
+                    session_id,
+                ]
+                proc = subprocess.run(
+                    command,
+                    cwd=Path.cwd(),
+                    text=True,
+                    capture_output=True,
+                    timeout=args.timeout_seconds,
+                    check=False,
+                )
+                payload = None
+                try:
+                    payload = json.loads(proc.stdout)
+                except json.JSONDecodeError:
+                    payload = {"stdout": proc.stdout}
+                status = "completed" if proc.returncode == 0 and payload.get("ok") else "failed"
+                ingest_summary = None
+                if status == "completed" and events_out.exists():
+                    ingest_args = argparse.Namespace(
+                        root=str(root),
+                        events=str(events_out),
+                        trajectory_id=trajectory_id,
+                        session_id=session_id,
+                        agent_version=(payload.get("versions") or {}).get("deepagents", "unknown"),
+                        task_type="execution_simulator",
+                    )
+                    ingest_stdout = io.StringIO()
+                    with redirect_stdout(ingest_stdout):
+                        command_ingest_events(ingest_args)
+                    try:
+                        ingest_summary = json.loads(ingest_stdout.getvalue())
+                    except json.JSONDecodeError:
+                        ingest_summary = {"raw": ingest_stdout.getvalue()}
+                record.update(
+                    {
+                        "status": status,
+                        "command": command,
+                        "returnCode": proc.returncode,
+                        "result": payload,
+                        "stderrFirstLine": proc.stderr.splitlines()[0] if proc.stderr else "",
+                        "trajectoryId": trajectory_id,
+                        "sessionId": session_id,
+                        "events": str(events_out),
+                        "ingest": ingest_summary,
+                        "endedAt": now_iso(),
+                    }
+                )
+                item["phase"] = "executed" if status == "completed" else "execution_failed"
+                item["executionRecordId"] = record["executionId"]
+                item["trajectoryId"] = trajectory_id
+                changed += 1
+
+        record_ref = store.write_control_json("execution-records", str(record["executionId"]), record)
+        item["executionRecordRef"] = record_ref
+        audit_event = {
+            "apiVersion": "agentlegion.dev/v0",
+            "kind": "AuditEvent",
+            "eventId": f"audit-{record['executionId']}",
+            "eventType": "execution_simulator",
+            "missionId": item.get("missionId"),
+            "taskId": item.get("taskId"),
+            "runtimePlanId": item.get("id"),
+            "status": record.get("status"),
+            "actor": args.executed_by,
+            "timestamp": record.get("endedAt"),
+        }
+        item["executionAuditEventRef"] = store.write_control_json("audit-events", str(audit_event["eventId"]), audit_event)
+        results.append(record)
+
+    compiled.setdefault("metadata", {})["executionSimulator"] = {
+        "version": "agentlegion.execution-simulator/v0",
+        "executionId": execution_id,
+        "executedBy": args.executed_by,
+        "changed": changed,
+        "executedAt": now_iso(),
+    }
+    compiled["summary"] = recompute_execution_summary(runtime_plans)
+
+    output = Path(args.output) if args.output else plan_path.with_name(plan_path.stem + ".executed.json")
+    write_json(output, compiled)
+    result = {
+        "ok": not any(record.get("status") == "failed" for record in results),
+        "executionId": execution_id,
+        "changed": changed,
+        "output": str(output),
+        "summary": compiled["summary"],
+        "results": results,
+    }
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result["ok"] else 1
+
+
+def recompute_execution_summary(runtime_plans: list[Resource]) -> Resource:
+    summary = recompute_compiled_summary(runtime_plans)
+    summary.update(
+        {
+            "executed": sum(1 for item in runtime_plans if item.get("phase") == "executed"),
+            "executionFailed": sum(1 for item in runtime_plans if item.get("phase") == "execution_failed"),
+            "approvedNotExecuted": sum(1 for item in runtime_plans if item.get("phase") == "approved_not_executed"),
+        }
+    )
+    return summary
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agentlegion", description="Read-only AgentLegion planner CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1711,6 +1906,19 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--decision-id", help="Base decision id; defaults to generated")
     approve.add_argument("--output", "-o", help="Write approved/rejected compiled plan to file")
     approve.set_defaults(func=command_approve_plan)
+
+    execute = sub.add_parser("execute-plan", help="Execute approved safe runtime plans through the local simulator")
+    execute.add_argument("compiled_plan", help="CompiledRuntimePlan JSON file after approval")
+    execute.add_argument("--root", default=".agentlegion", help="Local store root")
+    execute.add_argument("--task-id", action="append", help="Task id to execute; repeatable")
+    execute.add_argument("--plan-id", action="append", help="Runtime plan id to execute; repeatable")
+    execute.add_argument("--all", action="store_true", help="Attempt all approved runtime plans")
+    execute.add_argument("--python", default=".venv/bin/python", help="Python executable for DeepAgents smoke execution")
+    execute.add_argument("--timeout-seconds", type=int, default=60, help="Per-runtime execution timeout")
+    execute.add_argument("--executed-by", default="local-operator", help="Actor recorded on execution audit events")
+    execute.add_argument("--execution-id", help="Base execution id; defaults to generated")
+    execute.add_argument("--output", "-o", help="Write executed compiled plan to file")
+    execute.set_defaults(func=command_execute_plan)
 
     return parser
 

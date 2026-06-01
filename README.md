@@ -190,6 +190,24 @@ python3 agentlegion.py approve-plan \
 
 Approval writes local control records under `.agentlegion/control/` and updates the compiled plan phase to `approved_ready` or `rejected`. It still does not execute runtime commands.
 
+Execute an approved safe DeepAgents plan through the local simulator:
+
+```bash
+python3 agentlegion.py approve-plan \
+  .agentlegion/runtime-plans/mvp-local-refactor-auth.compiled.json \
+  --task-id plan \
+  --decision allow \
+  --reason "Approve DeepAgents planning dry-run." \
+  --output .agentlegion/runtime-plans/mvp-local-refactor-auth.plan-approved.json
+
+python3 agentlegion.py execute-plan \
+  .agentlegion/runtime-plans/mvp-local-refactor-auth.plan-approved.json \
+  --task-id plan \
+  --output .agentlegion/runtime-plans/mvp-local-refactor-auth.plan-executed.json
+```
+
+`execute-plan` currently executes only DeepAgents `local_smoke` plans. Hermes command previews are recorded as skipped and are not invoked.
+
 ## Read-Only Planner CLI
 
 This repository includes a small read-only planner:
