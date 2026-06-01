@@ -64,6 +64,7 @@ docs/
   policy-and-safety.md   Security model and risk controls
   implementation-guide.md Practical implementation sequence
   mvp-roadmap.md         Practical implementation phases
+  current-status-and-usage.md Stage summary and current usage guide
   dependency-aware-executor.md Mission-level safe executor with dependsOn checks
   reviews/               Architecture reviews and critique
   adr/
