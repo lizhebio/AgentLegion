@@ -217,7 +217,7 @@ python3 agentlegion.py execute-mission \
   --output .agentlegion/runtime-plans/mvp-local-refactor-auth.mission-executed.json
 ```
 
-`execute-mission` checks each step's `dependsOn` before execution, records `dependency_blocked` when prerequisites are not satisfied, writes a mission execution report under `.agentlegion/artifacts/`, and still uses the same safe boundary: DeepAgents `local_smoke` only, Hermes skipped.
+`execute-mission` builds a DAG from `dependsOn`, rejects invalid graphs before invoking any runtime, records scheduler batches and artifact readiness, writes `dependency_blocked` when prerequisites are not satisfied, writes a mission execution report under `.agentlegion/artifacts/`, and still uses the same safe boundary: DeepAgents `local_smoke` only, Hermes skipped.
 
 ## Read-Only Planner CLI
 

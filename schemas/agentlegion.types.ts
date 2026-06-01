@@ -242,6 +242,18 @@ export type RuntimePlan = {
   missionId: string;
   taskId: string;
   adapterVersion?: string;
+  phase?:
+    | "ready_dry_run"
+    | "pending_approval"
+    | "approved_ready"
+    | "approved_not_executed"
+    | "blocked"
+    | "rejected"
+    | "executed"
+    | "execution_failed"
+    | "dependency_blocked";
+  dependsOn?: string[];
+  inputArtifacts?: string[];
   nativeConfig: unknown;
   exposedTools?: string[];
   permissionPlan?: unknown;

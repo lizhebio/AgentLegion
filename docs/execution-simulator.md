@@ -97,7 +97,7 @@ It only executes the DeepAgents fake-model smoke path and captures trajectory fa
 
 `execute-plan` does not inspect `dependsOn`; it is a targeted single-plan execution tool.
 
-`execute-mission` walks the compiled mission, checks dependencies, writes `dependency_blocked` records when prerequisites are not satisfied, and then reuses the same safe simulator path for executable items:
+`execute-mission` builds a DAG from `dependsOn`, rejects invalid graphs before runtime invocation, records scheduler batches, checks input artifact readiness, writes `dependency_blocked` records when prerequisites are not satisfied, and then reuses the same safe simulator path for executable items:
 
 ```bash
 python3 agentlegion.py execute-mission \
@@ -106,3 +106,5 @@ python3 agentlegion.py execute-mission \
 ```
 
 Use `--include-ready-dry-run` when you want the mission executor to run `ready_dry_run` DeepAgents local smoke steps as well as approved steps.
+
+Use `--max-parallel-tasks` to record desired scheduler parallelism. The MVP reports whether a topological batch would need throttling, but it still executes sequentially.

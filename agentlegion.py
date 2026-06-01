@@ -664,6 +664,7 @@ def compile_runtime_plan(
                 "dryRun": dry_run,
                 "role": role,
                 "dependsOn": step.get("dependsOn", []),
+                "inputArtifacts": mission_step.get("inputArtifacts", []),
                 "nativeConfig": native_config,
                 "exposedTools": (((unit or {}).get("extensions") or {}).get(str(runtime_class)) or {}).get("tools", []),
                 "permissionPlan": {
@@ -1822,6 +1823,133 @@ def command_execute_plan(args: argparse.Namespace) -> int:
 
 
 DEPENDENCY_SATISFIED_PHASES = {"ready_dry_run", "executed", "approved_not_executed"}
+
+
+def build_mission_dag(runtime_plans: list[Resource]) -> Resource:
+    task_counts: dict[str, int] = {}
+    plan_by_task: dict[str, Resource] = {}
+    diagnostics = []
+    for index, item in enumerate(runtime_plans):
+        task_id = str(item.get("taskId") or "")
+        if not task_id:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "type": "missing_task_id",
+                    "runtimePlanId": item.get("id"),
+                    "message": "runtime plan has no taskId",
+                }
+            )
+            continue
+        task_counts[task_id] = task_counts.get(task_id, 0) + 1
+        plan_by_task[task_id] = item
+        item.setdefault("_schedulerIndex", index)
+
+    for task_id, count in task_counts.items():
+        if count > 1:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "type": "duplicate_task_id",
+                    "taskId": task_id,
+                    "message": "compiled runtime plan must have exactly one runtime plan per task for MVP scheduling",
+                }
+            )
+
+    reverse_edges: dict[str, list[str]] = {task_id: [] for task_id in plan_by_task}
+    indegree: dict[str, int] = {task_id: 0 for task_id in plan_by_task}
+    for task_id, item in plan_by_task.items():
+        for dependency_id in item.get("dependsOn") or []:
+            dependency_id = str(dependency_id)
+            if dependency_id not in plan_by_task:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "type": "missing_dependency",
+                        "taskId": task_id,
+                        "dependencyTaskId": dependency_id,
+                        "message": "dependency task was not found in compiled runtime plan",
+                    }
+                )
+                continue
+            reverse_edges[dependency_id].append(task_id)
+            indegree[task_id] += 1
+
+    original_indegree = dict(indegree)
+    ready = sorted(
+        [task_id for task_id, value in indegree.items() if value == 0],
+        key=lambda task_id: plan_by_task[task_id].get("_schedulerIndex", 0),
+    )
+    topological_order = []
+    batches = []
+    while ready:
+        batch = ready
+        batches.append(batch)
+        next_ready = []
+        for task_id in batch:
+            topological_order.append(task_id)
+            for child_id in reverse_edges.get(task_id, []):
+                indegree[child_id] -= 1
+                if indegree[child_id] == 0:
+                    next_ready.append(child_id)
+        ready = sorted(next_ready, key=lambda task_id: plan_by_task[task_id].get("_schedulerIndex", 0))
+
+    if len(topological_order) != len(plan_by_task):
+        cycle_tasks = [task_id for task_id, value in indegree.items() if value > 0]
+        diagnostics.append(
+            {
+                "level": "error",
+                "type": "cycle_detected",
+                "taskIds": cycle_tasks,
+                "message": "mission dependency graph contains a cycle",
+            }
+        )
+
+    for item in runtime_plans:
+        item.pop("_schedulerIndex", None)
+
+    return {
+        "ok": not any(diagnostic.get("level") == "error" for diagnostic in diagnostics),
+        "diagnostics": diagnostics,
+        "planByTask": plan_by_task,
+        "reverseEdges": reverse_edges,
+        "indegree": original_indegree,
+        "topologicalOrder": topological_order,
+        "batches": batches,
+    }
+
+
+def artifact_readiness(item: Resource, plan_by_task: dict[str, Resource]) -> tuple[bool, list[Resource]]:
+    producers = {}
+    for candidate in plan_by_task.values():
+        for artifact in candidate.get("expectedArtifacts") or []:
+            if artifact:
+                producers[str(artifact)] = candidate
+
+    missing = []
+    for artifact in item.get("inputArtifacts") or []:
+        producer = producers.get(str(artifact))
+        if not producer:
+            missing.append(
+                {
+                    "artifact": artifact,
+                    "reason": "no runtime plan declares this input artifact as expected output",
+                }
+            )
+            continue
+        if producer.get("phase") not in DEPENDENCY_SATISFIED_PHASES:
+            missing.append(
+                {
+                    "artifact": artifact,
+                    "producerTaskId": producer.get("taskId"),
+                    "producerRuntimePlanId": producer.get("id"),
+                    "producerPhase": producer.get("phase"),
+                    "reason": "artifact producer is not in a satisfied phase",
+                }
+            )
+    return not missing, missing
+
+
 def dependency_status(item: Resource, plan_by_task: dict[str, Resource]) -> tuple[bool, list[Resource]]:
     blocked = []
     for dependency_id in item.get("dependsOn") or []:
@@ -1897,43 +2025,126 @@ def command_execute_mission(args: argparse.Namespace) -> int:
     plan_path = Path(args.compiled_plan)
     compiled = json.loads(plan_path.read_text(encoding="utf-8"))
     runtime_plans = compiled.get("runtimePlans") or []
-    plan_by_task = {str(item.get("taskId")): item for item in runtime_plans}
+    dag = build_mission_dag(runtime_plans)
+    plan_by_task = dag["planByTask"]
     execution_id = args.execution_id or f"mission-execution-{compiled.get('metadata', {}).get('missionId', 'mission')}-{sha256_json([plan_path.name, args.include_ready_dry_run, now_iso()])[:12]}"
 
     results = []
     changed = 0
-    for item in runtime_plans:
-        phase = item.get("phase")
-        should_attempt = phase == "approved_ready" or (args.include_ready_dry_run and phase == "ready_dry_run")
-        if not should_attempt:
-            continue
-        dependencies_ok, blocked_dependencies = dependency_status(item, plan_by_task)
-        if not dependencies_ok:
-            record = write_dependency_block_record(
-                item=item,
-                store=store,
-                execution_id=execution_id,
-                executed_by=args.executed_by,
-                blocked_dependencies=blocked_dependencies,
-            )
-            results.append(record)
-            changed += 1
-            continue
-        record, item_changed = execute_runtime_plan_item(
-            item=item,
-            root=root,
-            store=store,
-            execution_id=execution_id,
-            python=args.python,
-            timeout_seconds=args.timeout_seconds,
-            executed_by=args.executed_by,
-            allow_ready_dry_run=args.include_ready_dry_run,
-        )
+    if dag["ok"]:
+        for batch_index, batch in enumerate(dag["batches"]):
+            batch_results = []
+            for task_id in batch:
+                item = plan_by_task[task_id]
+                phase = item.get("phase")
+                should_attempt = phase == "approved_ready" or (args.include_ready_dry_run and phase == "ready_dry_run")
+                if not should_attempt:
+                    continue
+                dependencies_ok, blocked_dependencies = dependency_status(item, plan_by_task)
+                artifacts_ok, missing_artifacts = artifact_readiness(item, plan_by_task)
+                if not dependencies_ok or not artifacts_ok:
+                    blocked_reasons = list(blocked_dependencies)
+                    for artifact in missing_artifacts:
+                        blocked_reasons.append({"type": "input_artifact", **artifact})
+                    record = write_dependency_block_record(
+                        item=item,
+                        store=store,
+                        execution_id=execution_id,
+                        executed_by=args.executed_by,
+                        blocked_dependencies=blocked_reasons,
+                    )
+                    record["schedulerBatch"] = batch_index
+                    batch_results.append(record)
+                    results.append(record)
+                    changed += 1
+                    continue
+                record, item_changed = execute_runtime_plan_item(
+                    item=item,
+                    root=root,
+                    store=store,
+                    execution_id=execution_id,
+                    python=args.python,
+                    timeout_seconds=args.timeout_seconds,
+                    executed_by=args.executed_by,
+                    allow_ready_dry_run=args.include_ready_dry_run,
+                )
+                record["schedulerBatch"] = batch_index
+                batch_results.append(record)
+                results.append(record)
+                changed += int(item_changed)
+            if batch_results:
+                dag.setdefault("executedBatches", []).append(
+                    {
+                        "batchIndex": batch_index,
+                        "taskIds": batch,
+                        "resultStatuses": [record.get("status") for record in batch_results],
+                    }
+                )
+    else:
+        record = {
+            "apiVersion": "agentlegion.dev/v0",
+            "kind": "ExecutionRecord",
+            "executionId": f"{execution_id}-preflight",
+            "missionId": compiled.get("metadata", {}).get("missionId"),
+            "mode": "dependency_aware_safe_simulator",
+            "status": "preflight_failed",
+            "diagnostics": dag["diagnostics"],
+            "startedAt": now_iso(),
+            "endedAt": now_iso(),
+        }
+        record_ref = store.write_control_json("execution-records", str(record["executionId"]), record)
+        audit_event = {
+            "apiVersion": "agentlegion.dev/v0",
+            "kind": "AuditEvent",
+            "eventId": f"audit-{record['executionId']}",
+            "eventType": "mission_preflight_failed",
+            "missionId": compiled.get("metadata", {}).get("missionId"),
+            "status": record["status"],
+            "actor": args.executed_by,
+            "timestamp": record["endedAt"],
+        }
+        store.write_control_json("audit-events", str(audit_event["eventId"]), audit_event)
+        compiled["missionPreflightRecordRef"] = record_ref
         results.append(record)
-        changed += int(item_changed)
+        changed += 1
+
+    scheduler_report = {
+        "ok": bool(dag["ok"]),
+        "diagnostics": dag["diagnostics"],
+        "topologicalOrder": dag["topologicalOrder"],
+        "batches": [
+            {
+                "batchIndex": index,
+                "taskIds": batch,
+                "parallelizable": len(batch) > 1,
+            }
+            for index, batch in enumerate(dag["batches"])
+        ],
+        "executedBatches": dag.get("executedBatches", []),
+        "maxParallelTasks": max((len(batch) for batch in dag["batches"]), default=0),
+    }
+    if args.max_parallel_tasks:
+        scheduler_report["configuredMaxParallelTasks"] = args.max_parallel_tasks
+        scheduler_report["requiresThrottling"] = any(len(batch) > args.max_parallel_tasks for batch in dag["batches"])
+        scheduler_report["throttleNote"] = "MVP records batch parallelism but still executes sequentially."
+
+    artifact_report = []
+    for task_id in dag["topologicalOrder"]:
+        item = plan_by_task[task_id]
+        ok, missing = artifact_readiness(item, plan_by_task)
+        artifact_report.append(
+            {
+                "taskId": task_id,
+                "inputArtifacts": item.get("inputArtifacts") or [],
+                "expectedArtifacts": item.get("expectedArtifacts") or [],
+                "ready": ok,
+                "missing": missing,
+            }
+        )
+    scheduler_report["artifactReadiness"] = artifact_report
 
     compiled.setdefault("metadata", {})["missionExecutionSimulator"] = {
-        "version": "agentlegion.dependency-aware-executor/v0",
+        "version": "agentlegion.dag-executor/v0",
         "executionId": execution_id,
         "executedBy": args.executed_by,
         "includeReadyDryRun": bool(args.include_ready_dry_run),
@@ -1948,6 +2159,7 @@ def command_execute_mission(args: argparse.Namespace) -> int:
         "missionId": compiled.get("metadata", {}).get("missionId"),
         "sourcePlan": str(plan_path),
         "summary": compiled["summary"],
+        "scheduler": scheduler_report,
         "dependencySatisfiedPhases": sorted(DEPENDENCY_SATISFIED_PHASES),
         "results": results,
         "generatedAt": now_iso(),
@@ -1958,12 +2170,13 @@ def command_execute_mission(args: argparse.Namespace) -> int:
     output = Path(args.output) if args.output else plan_path.with_name(plan_path.stem + ".mission-executed.json")
     write_json(output, compiled)
     result = {
-        "ok": not any(record.get("status") == "failed" for record in results),
+        "ok": bool(dag["ok"]) and not any(record.get("status") in {"failed", "preflight_failed"} for record in results),
         "executionId": execution_id,
         "changed": changed,
         "output": str(output),
         "reportRef": report_ref,
         "summary": compiled["summary"],
+        "scheduler": scheduler_report,
         "results": results,
     }
     print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -2101,6 +2314,7 @@ def build_parser() -> argparse.ArgumentParser:
     execute_mission.add_argument("compiled_plan", help="CompiledRuntimePlan JSON file after approval")
     execute_mission.add_argument("--root", default=".agentlegion", help="Local store root")
     execute_mission.add_argument("--include-ready-dry-run", action="store_true", help="Also execute ready_dry_run DeepAgents local smoke steps")
+    execute_mission.add_argument("--max-parallel-tasks", type=int, help="Record desired scheduler parallelism; MVP execution remains sequential")
     execute_mission.add_argument("--python", default=".venv/bin/python", help="Python executable for DeepAgents smoke execution")
     execute_mission.add_argument("--timeout-seconds", type=int, default=60, help="Per-runtime execution timeout")
     execute_mission.add_argument("--executed-by", default="local-operator", help="Actor recorded on execution audit events")

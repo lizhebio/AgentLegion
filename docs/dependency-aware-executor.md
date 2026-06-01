@@ -2,7 +2,7 @@
 
 `execute-mission` is the first mission-level execution simulator.
 
-It reads a `CompiledRuntimePlan`, walks the mission steps in compiled order, checks each selected step's `dependsOn`, and only then delegates to the safe runtime simulator.
+It reads a `CompiledRuntimePlan`, builds a DAG from each step's `dependsOn`, validates the graph, records scheduler batches, checks artifact readiness, and only then delegates runnable tasks to the safe runtime simulator.
 
 ## Why It Exists
 
@@ -15,6 +15,33 @@ a task cannot execute until its dependencies have reached a satisfied phase
 ```
 
 This keeps AgentLegion's control plane honest. A coder step cannot run if the planning step is still waiting for approval, and a review step cannot run if implementation failed or was blocked.
+
+## DAG Preflight
+
+Before attempting execution, the command validates:
+
+- each runtime plan has a `taskId`
+- there is only one runtime plan per `taskId` in the MVP scheduler
+- every `dependsOn` entry points to an existing task
+- the dependency graph is acyclic
+
+If preflight fails, no runtime is invoked. The executor writes a `preflight_failed` execution record and includes diagnostics in the mission execution report.
+
+## Scheduler Batches
+
+The scheduler emits topological batches:
+
+```json
+{
+  "batchIndex": 0,
+  "taskIds": ["research"],
+  "parallelizable": false
+}
+```
+
+If a batch has more than one task, it is marked `parallelizable: true`.
+
+The MVP still executes sequentially for audit simplicity. `--max-parallel-tasks` records the desired scheduler limit and whether throttling would be needed; it does not start parallel worker processes yet.
 
 ## Satisfied Dependency Phases
 
@@ -109,17 +136,18 @@ The compiled plan is updated with:
 
 - `metadata.missionExecutionSimulator`
 - `missionExecutionReportRef`
+- `scheduler.topologicalOrder`
+- `scheduler.batches`
+- `scheduler.artifactReadiness`
 - recomputed `summary.dependencyBlocked`
 
 ## Current Limitation
 
-The MVP assumes compiled plan order already follows the mission workflow. It is enough for the current linear `research -> plan -> implement -> review -> decide` mission.
+The MVP now validates and schedules a DAG, but runtime execution is still sequential. This is intentional: the controller should produce auditable scheduling facts before it starts truly concurrent side-effecting work.
 
 A later controller should add a full DAG scheduler with:
 
-- cycle detection
 - parallelism limits
 - retry policy
 - interrupt/cancel behavior
-- artifact readiness checks
 - runtime-specific dependency satisfaction rules
